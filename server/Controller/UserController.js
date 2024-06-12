@@ -1,14 +1,39 @@
+const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
-const { generator } = require("../generator/generator");
+const User = require("../Model/UserSchema");
+const crypto = require("crypto");
 require("dotenv").config();
 
-module.exports.email = async (req, res) => {
-  try {
-    const generatedCode = await generator(10);
-    const { email } = req.body;
+let pendingUsers = {};
 
-    console.log("Generated Code:", generatedCode);
-    console.log("Email to send:", email);
+module.exports.register = async (req, res, next) => {
+  try {
+    const { username, email, password } = req.body;
+
+    const usernameCheck = await User.findOne({ username });
+    if (usernameCheck) {
+      return res
+        .status(409)
+        .json({ msg: "Username already used!", status: false });
+    }
+
+    const emailCheck = await User.findOne({ email });
+    if (emailCheck) {
+      return res
+        .status(409)
+        .json({ msg: "Email already used!", status: false });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const verificationCode = crypto.randomBytes(4).toString("hex");
+
+    pendingUsers[email] = {
+      username,
+      email,
+      password: hashedPassword,
+      verificationCode,
+    };
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -22,8 +47,8 @@ module.exports.email = async (req, res) => {
 
     const mailOptions = {
       to: email,
-      subject: "Verification Code",
-      text: `Thank you for registering on Tic Tac Toe - Showdown!\nYour verification code: ${generatedCode}`,
+      subject: "Email Verification Code",
+      text: `Your verification code is: ${verificationCode}`,
     };
 
     transporter.sendMail(mailOptions, (error, info) => {
@@ -34,13 +59,59 @@ module.exports.email = async (req, res) => {
           .json({ msg: "Email Error: " + error.message, status: false });
       } else {
         console.log("Email sent:", info.response);
-        return res.status(200).json({ msg: "Email sent!", status: true });
+        return res
+          .status(200)
+          .json({ msg: "Verification email sent!", status: true });
       }
     });
   } catch (error) {
-    console.error("Code Generation Error:", error);
-    return res
-      .status(500)
-      .json({ msg: "Code Generation Error: " + error.message, status: false });
+    next(error);
+  }
+};
+
+module.exports.verifyEmail = async (req, res, next) => {
+  try {
+    const { email, verify } = req.body;
+    const pendingUser = pendingUsers[email];
+
+    if (!pendingUser) {
+      return res.status(400).json({ msg: "Invalid Email!", status: false });
+    }
+    if (pendingUser.verificationCode !== verify) {
+      return res
+        .status(400)
+        .json({ msg: "Invalid verification code.", status: false });
+    }
+
+    const user = await User.create({
+      email: pendingUser.email,
+      username: pendingUser.username,
+      password: pendingUser.password,
+    });
+    delete pendingUsers[email];
+
+    return res.status(201).json({status: true, user})
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports.login = async (req, res, next) => {
+   try {
+    const { username, password } = req.body;
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(400).json({ msg: "Incorrect username or password!", status: false });
+    }
+
+    const passwordValid = await bcrypt.compare(password, user.password);
+    if (!passwordValid) {
+      return res.status(400).json({ msg: "Incorrect username or password!", status: false });
+    }
+
+    return res.status(200).json({ status: true, user });
+  } catch (error) {
+    next(error);
   }
 };
